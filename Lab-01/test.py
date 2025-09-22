@@ -1,47 +1,53 @@
+import os
 import argparse
 import csv
 import json
 import random
 from pathlib import Path
 from sklearn.model_selection import train_test_split
+from concurrent.futures import ProcessPoolExecutor
+from multiprocessing import Lock, Manager
 
 from utils import data_loader
 from interfaces import NgramConfig
 from n_gram import Ngram
 
 
-def eval(train_data_all, n_list, k, val_ratio=0.1):
-    """
-    Selects the best N-gram model by validation perplexity.
-    """
-    print(f"Splitting training data for validation ({1-val_ratio:.0%}/{val_ratio:.0%})...")
-    train_data, eval_data = train_test_split(train_data_all, test_size=val_ratio, random_state=17)
-    
-    best = None
-    best_ppl = float('inf')
-    results = []
-    
-    for n in n_list:
-        print(f"\nEvaluating N={n}...")
-        model = Ngram(NgramConfig(n=n, k=k))
-        model.train(sequences=train_data)
-        pp = model.PPL(eval_data)
-        results.append((n, pp))
-        print(f"N={n}, Validation Perplexity = {pp:.4f}")
-        if pp < best_ppl:
-            best_ppl = pp
-            best = model
-            
-    assert best is not None, "Could not select a best model."
-    return best, results
+def train_and_evaluate_args(args):
+    n, train_data, eval_data, k = args
+    print(f"\nEvaluating N={n}...")
+    model = Ngram(NgramConfig(n=n, k=k))
+    model.train(sequences=train_data)
+    pp = model.PPL(eval_data)
+    print(f"N={n}, Validation Perplexity = {pp:.4f}")
+    return (n, pp)
 
 
-def build_contexts(test, n, target):
+def evaluate(train_data_all, n_list, k, val_ratio=0.1, max_workers=16):
+    print(f"Splitting training data for validation ({1 - val_ratio:.0%}/{val_ratio:.0%})...")
+    train_data, eval_data = train_test_split(train_data_all, test_size=val_ratio, random_state=42)
+
+    args_list = [(n, train_data, eval_data, k) for n in n_list]
+
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        results = list(executor.map(train_and_evaluate_args, args_list))
+
+    # Select best n and retrain
+    best_n, best_ppl = min(results, key=lambda x: x[1])
+    print(f"Best N={best_n} with perplexity {best_ppl:.4f}")
+    
+    best_model = Ngram(NgramConfig(n=best_n, k=k))
+    best_model.train(sequences=train_data_all)
+
+    return best_model, results
+
+
+def build_contexts(test_data, n, target):
     """
     Builds a list of contexts from test sequences for prediction sampling.
     """
     contexts = []
-    for seq in test:
+    for seq in test_data:
         if len(seq) < 2:
             continue
         # Take up to 5 random snippets from each test sequence
@@ -53,10 +59,10 @@ def build_contexts(test, n, target):
     return contexts[:target]
 
 
-def write_results(model, test, num_samples, topk, path):
+def write_results(model, test_data, num_samples, topk, path):
     """Generates and writes model predictions to a JSONL file."""
     n = model.cfg.n
-    contexts = build_contexts(test, n, num_samples)
+    contexts = build_contexts(test_data, n, num_samples)
     
     with path.open('w', encoding='utf-8') as f:
         for ctx in contexts:
@@ -75,33 +81,34 @@ def main():
     parser = argparse.ArgumentParser(description='N-gram model for Java Code Generation')
     parser.add_argument('--train_csv', type=str, default='../data/java_train_data.csv', help="Path to the CSV training data.")
     parser.add_argument('--test_csv', type=str, default='../data/java_eval_data.csv', help="Path to the CSV test data.")
-    parser.add_argument('--n_list', type=int, nargs='+', default=[3, 5, 7, 11, 15, 20], help="List of N values to test.")
+    parser.add_argument('--n_list', type=int, nargs='+', default=[3, 5, 7, 11], help="List of N values to test.")
     parser.add_argument('--k', type=float, default=0.1, help="Value for Add-k smoothing.")
     parser.add_argument('--val_ratio', type=float, default=0.1, help="Ratio of training data to use for validation.")
     parser.add_argument('--topk', type=int, default=10, help="Number of top predictions to save.")
     parser.add_argument('--num_samples', type=int, default=1000, help="Number of samples to generate from the test set.")
     parser.add_argument('--out_dir', type=str, default='output', help="Directory to save outputs.")
+    parser.add_argument('--max_workers', type=int, default=os.cpu_count(), help="Maximum number of worker threads.")
     args = parser.parse_args()
 
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
 
-    train_data_all = data_loader(Path(args.train_csv))
-    test = data_loader(Path(args.test_csv))
+    train_data = data_loader(Path(args.train_csv))
+    test_data = data_loader(Path(args.test_csv))
     
-    if not train_data_all or not test:
+    if not train_data or not test_data:
         print("Exiting: Training or test data could not be loaded.")
         return
 
-    print(f"Total sequences loaded: TRAIN={len(train_data_all)}, TEST={len(test)}")
+    print(f"Total sequences loaded: TRAIN={len(train_data)}, TEST={len(test_data)}")
 
-    best, results = eval(train_data_all, args.n_list, args.k, args.val_ratio)
+    best, results = evaluate(train_data, args.n_list, args.k, args.val_ratio, args.max_workers)
     
     best_n_val_pp = dict(results).get(best.cfg.n, float('inf'))
     print(f"Selected N={best.cfg.n} with validation perplexity: {best_n_val_pp:.4f}")
 
     # Evaluate the final selected model on the held-out test set
-    test_pp = best.PPL(test)
+    test_pp = best.PPL(test_data)
     print(f"Test Perplexity of the best model (N={best.cfg.n}): {test_pp:.4f}")
 
     # Write outputs
@@ -123,7 +130,7 @@ def main():
 
     # Generate and save predictions
     predictions_path = out / 'pred.jsonl'
-    write_results(best, test, args.num_samples, args.topk, predictions_path)
+    write_results(best, test_data, args.num_samples, args.topk, predictions_path)
 
 
 if __name__ == '__main__':

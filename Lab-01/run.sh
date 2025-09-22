@@ -1,1 +1,1 @@
-python test.py --train_csv ../data/java_train_data.csv --test_csv ../data/java_eval_data.csv --n_list 3 5 7 11 15 20 50 100 200 --num_samples 1000 --out_dir results/
+python test.py --train_csv ../data/java_train_data.csv --test_csv ../data/java_eval_data.csv --n_list 3 5 7 11 15 20 50 100 150 200 --num_samples 1000 --out_dir results/ --max_workers 16 | tee outputs.log
