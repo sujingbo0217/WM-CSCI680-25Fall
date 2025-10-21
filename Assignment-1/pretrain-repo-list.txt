@@ -1,0 +1,15 @@
+git@github.com:pytorch/ignite.git
+git@github.com:pytorch/pytorch.git
+git@github.com:ray-project/ray.git
+git@github.com:realpython/python-guide.git
+git@github.com:scikit-learn/scikit-learn.git
+git@github.com:scrapy/scrapy.git
+git@github.com:sqlalchemy/sqlalchemy.git
+git@github.com:streamlit/streamlit.git
+git@github.com:sympy/sympy.git
+git@github.com:tensorflow/tensorflow.git
+git@github.com:tiangolo/typer.git
+git@github.com:trekhleb/learn-python.git
+git@github.com:ultralytics/ultralytics.git
+git@github.com:vinta/awesome-python.git
+git@github.com:wagtail/wagtail.git
