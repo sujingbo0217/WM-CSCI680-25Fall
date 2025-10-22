@@ -2,43 +2,43 @@ import os
 import sys
 import csv
 
-from tokenizers import Tokenizer, models, trainers, pre_tokenizers, normalizers
+from tokenizers import Tokenizer, models, trainers, pre_tokenizers, processors
+from tokenizers.pre_tokenizers import ByteLevel
 from tokenizers.processors import TemplateProcessing
-from tokenizers.normalizers import NFD, Lowercase, StripAccents
 
-DATA_PATH = "data/pretrain/data.csv"
-TOKENIZER_DIR = "data/tokenizer"
+INPUT_CSV = "data/pretrain/data.csv"
+OUT_DIR = "data/tokenizers"
 VOCAB_SIZE = 32000
+MIN_FREQUENCY = 2
+SPECIAL_TOKENS = ["<pad>", "<s>", "</s>", "<unk>", "<mask>"]
 
-os.makedirs(TOKENIZER_DIR, exist_ok=True)
+os.makedirs(OUT_DIR, exist_ok=True)
 csv.field_size_limit(sys.maxsize)
 
-# === Collect all code ===
-texts = []
-with open(DATA_PATH, newline="", encoding="utf-8") as f:
-    reader = csv.DictReader(f)
-    for row in reader:
-        code = row["source"].strip()
-        if code:
-            texts.append(code)
+# 1) Create a simple iterator over code strings
+def code_iterator(path):
+    with open(path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            text = row.get("source") or row.get("code") or row.get("input") or ""
+            if text:
+                # keep raw code (preserve newlines)
+                yield text
 
-# === Initialize tokenizer ===
-tokenizer = Tokenizer(models.BPE())
-tokenizer.normalizer = normalizers.Sequence(
-    [NFD(), Lowercase(), StripAccents()])
-tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel()
+# 2) Initialize a BPE tokenizer with byte-level pretokenizer (robust for code)
+tokenizer = Tokenizer(models.BPE(unk_token="<unk>"))
+tokenizer.pre_tokenizer = ByteLevel()  # splits bytes into tokens similar to byte-level BPE
 
-# === Trainer ===
 trainer = trainers.BpeTrainer(
     vocab_size=VOCAB_SIZE,
-    special_tokens=["<pad>", "<s>", "</s>", "<unk>", "<mask>"]
+    min_frequency=MIN_FREQUENCY,
+    special_tokens=SPECIAL_TOKENS
 )
 
-# === Train ===
-print(f"Training tokenizer on {len(texts):,} samples ...")
-tokenizer.train_from_iterator(texts, trainer=trainer)
+print("Training tokenizer...")
+tokenizer.train_from_iterator(code_iterator(INPUT_CSV), trainer=trainer)
 
-# === Post-processing for seq2seq format ===
+# Add post-processor so we have explicit <s> ... </s> framing
 tokenizer.post_processor = TemplateProcessing(
     single="<s> $A </s>",
     pair="<s> $A </s> </s> $B </s>",
@@ -48,6 +48,18 @@ tokenizer.post_processor = TemplateProcessing(
     ],
 )
 
-# === Save ===
-tokenizer.save(os.path.join(TOKENIZER_DIR, "tokenizer.json"))
-print(f"Saved tokenizer to {TOKENIZER_DIR}/tokenizer.json")
+# Save tokenizer json
+tok_json = os.path.join(OUT_DIR, "tokenizer.json")
+tokenizer.save(tok_json)
+print(f"Saved tokenizer to {tok_json}")
+
+# Also write a tiny config so PreTrainedTokenizerFast can be loaded easily
+from transformers import PreTrainedTokenizerFast
+hf_tokenizer = PreTrainedTokenizerFast(tokenizer_file=tok_json,
+                                       bos_token="<s>",
+                                       eos_token="</s>",
+                                       unk_token="<unk>",
+                                       pad_token="<pad>",
+                                       mask_token="<mask>")
+hf_tokenizer.save_pretrained(OUT_DIR)
+print(f"HuggingFace tokenizer saved to {OUT_DIR} (tokenizer.json + tokenizer_config.json)")
