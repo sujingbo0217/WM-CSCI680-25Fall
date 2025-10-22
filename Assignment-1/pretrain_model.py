@@ -1,6 +1,5 @@
 import os
 import random
-import numpy as np
 from transformers import (
     T5TokenizerFast,
     T5Config,
@@ -15,7 +14,7 @@ from datasets import load_dataset
 # === Paths ===
 DATA_PATH = "data/pretrain/data.csv"
 TOKENIZER_DIR = "data/tokenizers"
-MODEL_DIR = "data/models/t5-large"
+MODEL_DIR = "data/models/t5-base"   # large
 
 # === 1. Load trained tokenizer ===
 print(f"Loading tokenizer from: {TOKENIZER_DIR}")
@@ -29,10 +28,10 @@ tokenizer.add_special_tokens(special_tokens)
 print("Initializing CodeT5-style model config")
 config = T5Config(
     vocab_size=len(tokenizer),
-    d_model=1024,    # 768
-    d_ff=4096,       # 3072
-    num_layers=24,   # 12
-    num_heads=16,    # 12
+    d_model=768,     # 1024
+    d_ff=3072,       # 4096
+    num_layers=12,   # 24
+    num_heads=12,    # 16
     decoder_start_token_id=tokenizer.pad_token_id,
     pad_token_id=tokenizer.pad_token_id,
     eos_token_id=tokenizer.eos_token_id,
