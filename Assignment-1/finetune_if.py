@@ -10,38 +10,53 @@ from transformers import (
     Trainer,
     TrainingArguments,
 )
+from utils import extract_if_conditions
 
 DATA_PATH = "data/finetune/data.csv"
-MODEL_DIR = "data/models/t5-base"
+# DATA_PATH = "data/finetune/benchmark_if_only.csv"
+TOKEN_DIR = "results/tokenizers"
+MODEL_DIR = "results/models/t5-base"
 OUTPUT_DIR = "results"
+# CHECKPOINT_DIR = "results"
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # === 1. Load pretrained tokenizer and model ===
 print("Loading pretrained model and tokenizer...")
-tokenizer = T5TokenizerFast.from_pretrained(MODEL_DIR)
+tokenizer = T5TokenizerFast.from_pretrained(TOKEN_DIR)
 model = T5ForConditionalGeneration.from_pretrained(MODEL_DIR)
+
+# tokenizer = T5TokenizerFast.from_pretrained(CHECKPOINT_DIR)
+# model = T5ForConditionalGeneration.from_pretrained(CHECKPOINT_DIR)
 
 # === 2. Load fine-tuning dataset ===
 print("Loading fine-tuning dataset:", DATA_PATH)
 dataset = load_dataset("csv", data_files=DATA_PATH)["train"]
 
-# Example dataset columns:
-#   function_code, if_condition
-# Each function_code contains at least one "if" statement.
+columns = dataset.column_names
+print("Detected columns:", columns)
 
-# === 3. Mask one if-condition per function ===
-
-
+# === 3. Mask one if-condition per function depending on format ===
 def mask_if_condition(example):
-    code = example["function_code"]
-    condition = example["if_condition"]
+    """
+    main test dataset (repo, file, function_name, ifs, source)
+    provided dataset (id, code, docstring, etc.)
+    """
 
-    if "if" not in code or condition not in code:
+    code = example.get("source") or example.get("code")
+    if not isinstance(code, str) or "if" not in code:
         return None
 
-    # Mask the condition once
+    if_conditions = extract_if_conditions(code)
+    if not if_conditions:
+        return None
+
+    # randomly pick one condition to mask
+    condition = random.choice(if_conditions)
+
+    # Replace only the first occurrence of the condition
     masked_code = code.replace(condition, "<mask>", 1)
+
     example["input_text"] = masked_code
     example["target_text"] = condition
     return example
@@ -51,19 +66,19 @@ print("Masking one if condition per function...")
 dataset = dataset.map(mask_if_condition)
 dataset = dataset.filter(lambda x: x is not None and "input_text" in x)
 
+print(f"After masking: {len(dataset)} examples remain.")
+
 # === 4. Split dataset: train / validation / test ===
 dataset = dataset.train_test_split(test_size=0.2, seed=42)
 test_split = dataset["test"].train_test_split(test_size=0.5, seed=42)
-train_dataset = dataset["train"]
-val_dataset = test_split["train"]
-test_dataset = test_split["test"]
+train_dataset = dataset["train"]        # 80% fine-tune set
+val_dataset = test_split["train"]       # 10% validation set
+test_dataset = test_split["test"]       # 10% test set
 
 print(
     f"Train size: {len(train_dataset)}, Val size: {len(val_dataset)}, Test size: {len(test_dataset)}")
 
 # === 5. Tokenization ===
-
-
 def tokenize_batch(batch):
     model_inputs = tokenizer(
         batch["input_text"],
@@ -80,7 +95,7 @@ def tokenize_batch(batch):
     model_inputs["labels"] = labels
     return model_inputs
 
-
+old_test_dataset = test_dataset
 train_dataset = train_dataset.map(tokenize_batch, batched=True)
 val_dataset = val_dataset.map(tokenize_batch, batched=True)
 test_dataset = test_dataset.map(tokenize_batch, batched=True)
@@ -98,10 +113,10 @@ training_args = TrainingArguments(
     overwrite_output_dir=True,
     per_device_train_batch_size=8,
     per_device_eval_batch_size=8,
-    num_train_epochs=5,
+    num_train_epochs=10,
     learning_rate=5e-5,
     weight_decay=0.01,
-    evaluation_strategy="epoch",
+    eval_strategy="epoch",
     save_strategy="epoch",
     load_best_model_at_end=True,
     metric_for_best_model="eval_loss",
@@ -125,10 +140,9 @@ tokenizer.save_pretrained(OUTPUT_DIR)
 print("Fine-tuning complete!")
 
 # === 7. Evaluation & Predictions ===
-
-
 def generate_predictions(dataset, name):
     results = []
+    model.to("cuda" if torch.cuda.is_available() else "cpu")
     model.eval()
 
     for example in dataset:
@@ -158,13 +172,10 @@ def generate_predictions(dataset, name):
     csv_path = os.path.join(OUTPUT_DIR, f"{name}.csv")
     df.to_csv(csv_path, index=False)
     print(f"Saved predictions to {csv_path}")
+    print(f"Average prediction score: {df['prediction_score'].mean():.2f}")
+    print(f"Accuracy: {(df['correct'].sum()/len(df))*100:.2f}%")
     return df
 
 
-# Run on both your test sets
-generate_predictions(test_dataset, "generated-testset")
-# Optionally load a provided external testset and evaluate:
-# provided_testset = load_dataset("csv", data_files="data/finetune/provided_test.csv")["train"]
-# generate_predictions(provided_testset, "provided-testset")
-
+generate_predictions(old_test_dataset, "generated-testset")
 print("All predictions done!")

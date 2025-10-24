@@ -7,7 +7,7 @@ from tokenizers.pre_tokenizers import ByteLevel
 from tokenizers.processors import TemplateProcessing
 
 INPUT_CSV = "data/pretrain/data.csv"
-OUT_DIR = "data/tokenizers"
+OUT_DIR = "results/tokenizers"
 VOCAB_SIZE = 32000
 MIN_FREQUENCY = 2
 SPECIAL_TOKENS = ["<pad>", "<s>", "</s>", "<unk>", "<mask>"]
